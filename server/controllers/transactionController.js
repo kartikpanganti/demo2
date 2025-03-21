@@ -1,38 +1,56 @@
-const Transaction = require('../models/Transaction');
-const Medicine = require('../models/Medicine');
+// Commented out actual MongoDB models
+// const Transaction = require('../models/Transaction');
+// const Medicine = require('../models/Medicine');
+
+// Using mock data instead
+const { 
+  medicines, 
+  transactions, 
+  getTransactionWithPopulatedFields 
+} = require('../mock/mockData');
 
 // Get all transactions with optional filters
 exports.getTransactions = async (req, res) => {
   try {
     const { medicineId, type, startDate, endDate } = req.query;
-    let query = {};
+    let filteredTransactions = [...transactions];
 
     // Apply filters if provided
     if (medicineId) {
-      query.medicine = medicineId;
+      filteredTransactions = filteredTransactions.filter(trans => trans.medicine === medicineId);
     }
 
     if (type) {
-      query.type = type;
+      filteredTransactions = filteredTransactions.filter(trans => trans.type === type);
     }
 
     // Date range filter
     if (startDate || endDate) {
-      query.createdAt = {};
       if (startDate) {
-        query.createdAt.$gte = new Date(startDate);
+        const startDateTime = new Date(startDate).getTime();
+        filteredTransactions = filteredTransactions.filter(trans => 
+          new Date(trans.createdAt).getTime() >= startDateTime
+        );
       }
       if (endDate) {
-        query.createdAt.$lte = new Date(endDate);
+        const endDateTime = new Date(endDate).getTime();
+        filteredTransactions = filteredTransactions.filter(trans => 
+          new Date(trans.createdAt).getTime() <= endDateTime
+        );
       }
     }
 
-    const transactions = await Transaction.find(query)
-      .populate('medicine', 'name barcode')
-      .populate('performedBy', 'name')
-      .sort({ createdAt: -1 });
+    // Sort by createdAt in descending order
+    filteredTransactions.sort((a, b) => 
+      new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
 
-    res.json(transactions);
+    // Populate references
+    const populatedTransactions = filteredTransactions.map(trans => 
+      getTransactionWithPopulatedFields(trans._id)
+    );
+
+    res.json(populatedTransactions);
   } catch (error) {
     console.error('Get transactions error:', error);
     res.status(500).json({ message: 'Server error' });
@@ -50,11 +68,12 @@ exports.createTransaction = async (req, res) => {
     }
 
     // Find the medicine
-    const medicine = await Medicine.findById(medicineId);
-    if (!medicine) {
+    const medicineIndex = medicines.findIndex(med => med._id === medicineId);
+    if (medicineIndex === -1) {
       return res.status(404).json({ message: 'Medicine not found' });
     }
 
+    const medicine = medicines[medicineIndex];
     // Store previous quantity
     const previousQuantity = medicine.quantity;
     let updatedQuantity;
@@ -92,25 +111,26 @@ exports.createTransaction = async (req, res) => {
     }
 
     // Save updated medicine
-    await medicine.save();
+    medicine.updatedAt = new Date();
+    medicines[medicineIndex] = medicine;
 
     // Create transaction record
-    const transaction = new Transaction({
+    const newTransaction = {
+      _id: `trans_${Date.now()}`,
       medicine: medicineId,
       type,
       quantity: parseInt(quantity),
       previousQuantity,
       updatedQuantity,
       reason,
-      performedBy: req.user.id
-    });
+      performedBy: req.user.id,
+      createdAt: new Date()
+    };
 
-    await transaction.save();
+    transactions.push(newTransaction);
 
     // Return transaction with populated references
-    const populatedTransaction = await Transaction.findById(transaction._id)
-      .populate('medicine', 'name barcode')
-      .populate('performedBy', 'name');
+    const populatedTransaction = getTransactionWithPopulatedFields(newTransaction._id);
 
     res.status(201).json(populatedTransaction);
   } catch (error) {
@@ -122,9 +142,7 @@ exports.createTransaction = async (req, res) => {
 // Get transaction by ID
 exports.getTransactionById = async (req, res) => {
   try {
-    const transaction = await Transaction.findById(req.params.id)
-      .populate('medicine', 'name barcode')
-      .populate('performedBy', 'name');
+    const transaction = getTransactionWithPopulatedFields(req.params.id);
     
     if (!transaction) {
       return res.status(404).json({ message: 'Transaction not found' });
